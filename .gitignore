@@ -1,0 +1,37 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# ---- analysis artefacts (never commit audio or results) ----
+*.m4a
+*.mp3
+*.aac
+*.flac
+*.wav
+*.opus
+*.ogg
+*.json
+*.csv
+*.npz
+*.npy
+*.png
+!docs/**/*.png
+manifest_*.txt
+log_*.txt
+
+# ---- OS / editor ----
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# ---- secrets ----
+.env
+.env.*
+*.key
