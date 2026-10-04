@@ -11,5 +11,12 @@ echo "== installing (editable)"
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q -e .
 
+echo "== environment"
+.venv/bin/python -c "import sys, numpy, matplotlib; \
+print('python    ', sys.version.split()[0]); \
+print('numpy     ', numpy.__version__); \
+print('matplotlib', matplotlib.__version__)"
+
 echo "== validation"
 .venv/bin/python tests/validate.py
+
