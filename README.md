@@ -60,11 +60,58 @@ asmr-spectrum analyze work.m4a -o results --label work --from-files part1.aac pa
 
 # quick level + low-frequency table for many files, no plots
 asmr-spectrum scan *.aac --json scan.json
+
+# parameter audit: sample rate, effective bit depth, codec, bitrate, HF content
+asmr-spectrum audit track.aac
+asmr-spectrum audit ~/Music/Music/Media.localized/"Apple Music"/Artist/Album/*.movpkg
+asmr-spectrum audit *.aac --json audit.json
 ```
 
 `--from-files` derives per-source time boundaries from the inputs' durations and
 reports each one's own band shares, level and peak. `--source t0,t1,name` does
 the same with explicit ranges.
+
+## Auditing a file (`audit`)
+
+Answers "what is this file, really" — including whether a Hi-Res label is backed
+by actual content:
+
+| reported | how it is established |
+|---|---|
+sample rate | container metadata, cross-checked against the codec configuration box |
+**effective bit depth** | the quantisation grid the samples land on, from an **int32** decode |
+codec / losslessness | container metadata against a known lossless list |
+bitrate | stream metadata plus measured `size × 8 / duration` |
+**bandwidth** | spectral edge relative to the 2–10 kHz band, and whether it is constant over time |
+**HF content** | energy in the top half of the passband (Nyquist/2 … Nyquist), measured **at the file's own rate** |
+verdict | `not hi-res` / `hi-res container, questionable content` / `hi-res by container (content unverified)` / `hi-res (verified)` |
+
+Three measurement traps this tool is built around, each found by testing:
+
+1. **Never grid-test float samples.** ffmpeg's float output is not scaled by 2³¹ —
+   it measured 2³⁰·⁵, off by √2 — so a fixed scale factor misreads the grid. The
+   audit decodes **int32** instead, where the grid is exact.
+2. **A genuine ultrasonic component is a narrowband peak, not a band average.**
+   On a real 96 kHz master with a 30 kHz tone the 24–48 kHz band *mean* sat 0.2 dB
+   above the mid-band reference while the band *peak* sat 58 dB above it. The test
+   therefore requires a peak that both clears an absolute level and towers over
+   that band's own median.
+3. **Do not probe above the file's rate to look for HF content.** Upsampling
+   injects the resampler's own images above the source Nyquist, which look exactly
+   like content. Measuring the top half of the passband at the native rate avoids
+   this entirely.
+
+Apple Music `*.movpkg` downloads are handled too: their audio is FairPlay
+encrypted, so they are described from `boot.xml` / `m3u8` / init-fragment
+manifests (codec, rate, depth, channels, bitrate, and which variant was
+downloaded) and the audit states plainly that bandwidth and HF content could not
+be measured instead of guessing.
+
+Worked examples from real files: a "Hi-Res"-labelled stream turned out to be
+48 kHz AAC at 19.3 kHz bandwidth; a "192 kHz / 24 bit / 9216 kbps" label was
+refuted by a 48 kHz / 166 kbps AAC payload 45× smaller than the claim implies;
+a genuine 96 kHz/24-bit ALAC stream was confirmed, then marked content-unverified
+because DRM blocked the HF test.
 
 ## Outputs
 
@@ -113,6 +160,8 @@ Twenty checks, no audio is committed to the repository.
 ```
 src/asmr_spectrum/
   config.py     sample rate, band definitions, small helpers
+  audit.py      parameter audit: bit depth grid, bandwidth, HF content, verdict
+  movpkg.py     Apple Music .movpkg (encrypted HLS) description from manifests
   audio.py      ffprobe/ffmpeg probing and streamed decoding
   core.py       Welch spectrum, per-block bands, exact band-limited energy, loudness
   report.py     derived tables, JSON/CSV writers, source attribution
@@ -121,7 +170,8 @@ src/asmr_spectrum/
   concat.py     pipe-decode / single-encode concatenation
   sources.py    source boundaries and manifests
   cli.py        argparse entry points
-tests/validate.py   self-test against closed-form values
+tests/validate.py         self-test for the spectral analysis
+tests/validate_audit.py   self-test for the parameter audit
 scripts/run_tests.sh
 ```
 

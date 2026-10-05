@@ -17,6 +17,9 @@ print('python    ', sys.version.split()[0]); \
 print('numpy     ', numpy.__version__); \
 print('matplotlib', matplotlib.__version__)"
 
-echo "== validation"
+echo "== validation: spectral analysis"
 .venv/bin/python tests/validate.py
+
+echo "== validation: parameter audit"
+.venv/bin/python tests/validate_audit.py
 
