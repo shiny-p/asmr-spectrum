@@ -71,6 +71,37 @@ asmr-spectrum audit *.aac --json audit.json
 reports each one's own band shares, level and peak. `--source t0,t1,name` does
 the same with explicit ranges.
 
+## Native Swift build (`audioscope`)
+
+The parameter audit is also implemented as a standalone native binary, so it can be
+dropped into `~/bin` and run without a Python environment:
+
+```bash
+scripts/build_swift.sh              # builds and installs to ~/bin
+audioscope track.aac                # same report as `asmr-spectrum audit`
+audioscope *.aac --json out.json
+```
+
+Decoding still shells out to ffmpeg/ffprobe (same as the Python version); the
+analysis — FFT, bit-depth grid, bandwidth, HF verdict — is native, using Accelerate.
+
+`tests/crosscheck_swift.py` runs both implementations over generated fixtures and
+compares every measured field, because two implementations of the same heuristic
+are only trustworthy if they agree numerically. Three defects were caught that way:
+
+* **`vDSP_fft_zrip` needs a 0.5 magnitude correction** — it returns twice the true
+  DFT. Harmless for pure dB ratios, but wrong for any absolute level.
+* **float32 is not enough precision.** A genuine 96 kHz master whose content ends at
+  20 kHz has almost nothing above 24 kHz, and float32's numerical floor (~-140 dB per
+  bin) swamped it: the band peak read 24 dB too high and flipped the verdict from
+  "questionable" to "genuine". The FFT now runs in float64.
+* Two implementations also disagreed about *fixtures*, not just code: a synthetic
+  signal with flat white noise does not resemble real audio, and a fixture whose
+  spectrum is empty above 10 kHz cannot exhibit a measurable bandwidth edge at all.
+  The generator now models the measured spectrum of a real lossy file (level -8 dB at
+  10-13 kHz, -15 dB at 13-16 kHz, -21 dB at 16-18 kHz, then a 32 dB cliff at the
+  codec cutoff).
+
 ## Auditing a file (`audit`)
 
 Answers "what is this file, really" — including whether a Hi-Res label is backed
@@ -170,9 +201,18 @@ src/asmr_spectrum/
   concat.py     pipe-decode / single-encode concatenation
   sources.py    source boundaries and manifests
   cli.py        argparse entry points
-tests/validate.py         self-test for the spectral analysis
-tests/validate_audit.py   self-test for the parameter audit
+swift/
+  Package.swift                 SwiftPM manifest (no dependencies)
+  Sources/audioscope/
+    main.swift                  CLI, report formatting, JSON output
+    Proc.swift                  ffmpeg/ffprobe subprocess plumbing
+    DSP.swift                   float64 real FFT on Accelerate/vDSP
+    Audit.swift                 bit-depth grid, bandwidth, HF verdict
+tests/validate.py           self-test for the spectral analysis
+tests/validate_audit.py     self-test for the parameter audit
+tests/crosscheck_swift.py   Swift-vs-Python agreement over generated fixtures
 scripts/run_tests.sh
+scripts/build_swift.sh
 ```
 
 ## License

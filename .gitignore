@@ -25,6 +25,12 @@ env/
 manifest_*.txt
 log_*.txt
 
+# ---- Swift ----
+swift/.build/
+.swiftpm/
+*.o
+*.swiftmodule
+
 # ---- OS / editor ----
 .DS_Store
 .idea/

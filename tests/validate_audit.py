@@ -36,29 +36,62 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         FAILURES.append(name)
 
 
-def _signal(sr: int, secs: float, ultrasonic: bool, lowpass: float | None,
-            seed: int = 11) -> np.ndarray:
+def _signal(sr, secs, ultrasonic, lowpass, seed=11, noise_floor_db=-70.0,
+            hf_content_db=-18.0):
+    """Synthesise audio whose spectrum resembles real music.
+
+    Modelled on a measured lossy file (KPOP AAC @48k), where level relative to the
+    2-10 kHz band runs about -8 dB at 10-13 kHz, -15 dB at 13-16 kHz, -21 dB at
+    16-18 kHz, then collapses to -56 dB above the codec's 19.3 kHz cutoff. That
+    32 dB cliff is what makes a bandwidth edge measurable; a fixture whose spectrum
+    is empty above 10 kHz cannot show one no matter how low its noise floor is.
+
+    `noise_floor_db` sets a shaped broadband floor (steady to 8 kHz, then falling),
+    `hf_content_db` the 10-19 kHz content level.
+    """
     rng = np.random.default_rng(seed)
     n = int(sr * secs)
     t = np.arange(n) / sr
-    x = 0.35 * (0.5 * np.sin(2 * np.pi * 220 * t)
-                + 0.25 * np.sin(2 * np.pi * 1170 * t)
-                + 0.15 * np.sin(2 * np.pi * 5200 * t))
+    fn = np.fft.rfftfreq(n, d=1.0 / sr)
+    tone_freqs = [(220, 0.5), (440, 0.2), (1170, 0.25), (5200, 0.15),
+                  (9000, 0.08), (13000, 0.06)]
     if ultrasonic:
-        x += 0.05 * np.sin(2 * np.pi * 30000 * t) + 0.03 * np.sin(2 * np.pi * 40000 * t)
-    x += 0.0015 * rng.standard_normal(n)
+        tone_freqs += [(30000, 0.16), (40000, 0.10)]
+    tonal = np.zeros(n)
+    for f0, amp in tone_freqs:
+        if f0 < sr * 0.48:
+            tonal += amp * np.sin(2 * np.pi * f0 * t)
+
+    # shaped noise floor: flat below 8 kHz, then -6 dB/octave
+    floor = rng.standard_normal(n)
+    shape = np.ones_like(fn)
+    hi = fn > 8000
+    shape[hi] = (fn[hi] / 8000.0) ** -1.0
+    floor = np.fft.irfft(np.fft.rfft(floor) * shape, n)
+    floor /= np.abs(floor).max()
+
+    # dense HF content in the audible top octaves, level set relative to the tonal band
+    hf = rng.standard_normal(n)
+    hf_shape = np.zeros_like(fn)
+    hf_shape[(fn >= 10000) & (fn < 19500)] = 1.0
+    hf = np.fft.irfft(np.fft.rfft(hf) * hf_shape, n)
+    hf /= max(np.abs(hf).max(), 1e-12)
+
+    tonal /= np.abs(tonal).max()
+    x = tonal + hf * 10 ** (hf_content_db / 20.0) + floor * 10 ** (noise_floor_db / 20.0)
     if lowpass:
         X = np.fft.rfft(x)
-        f = np.fft.rfftfreq(n, d=1.0 / sr)
-        X[f > lowpass] = 0
+        X[fn > lowpass] = 0
         x = np.fft.irfft(X, n)
+    x /= np.abs(x).max()
     return x
 
 
 def _write(path: str, x: np.ndarray, sr: int, bits: int) -> None:
     n = x.size
     if bits == 24:
-        q = np.clip(np.round(x * 8388607), -8388608, 8388607).astype(np.int64)
+        # scale by 2**23 so a full-scale sample maps exactly to the int24 limit
+        q = np.clip(np.round(x * 8388608), -8388608, 8388607).astype(np.int64)
         u = (q & 0xFFFFFF).astype(np.uint32)
         b = np.empty((n, 3), dtype=np.uint8)
         b[:, 0], b[:, 1], b[:, 2] = u & 0xFF, (u >> 8) & 0xFF, (u >> 16) & 0xFF
@@ -83,10 +116,16 @@ def main() -> int:
     real = os.path.join(tmp, "real_hires.flac")
     fake = os.path.join(tmp, "fake_hires.flac")
     lossy = os.path.join(tmp, "lossy.m4a")
+    noisy = os.path.join(tmp, "noisy_hires.flac")
     _write(f16, _signal(48000, 12, False, None), 48000, 16)
     _write(f24, _signal(48000, 12, False, None), 48000, 24)
-    _write(real, _signal(96000, 20, True, None), 96000, 24)
-    _write(fake, _signal(96000, 20, False, 20000), 96000, 24)
+    # Two fixture regimes, both realistic and both worth testing:
+    #  * low noise  -> a lossy codec's brick-wall edge is detectable
+    #  * high noise -> the spectrum is noise-limited and NO edge exists to find,
+    #                  which is the honest answer, not a failure
+    _write(real, _signal(96000, 20, True, None, noise_floor_db=-90), 96000, 24)
+    _write(fake, _signal(96000, 20, False, 20000, noise_floor_db=-90), 96000, 24)
+    _write(noisy, _signal(96000, 20, False, 20000, noise_floor_db=-40), 96000, 24)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", f16, "-c:a", "aac",
                     "-b:a", "192k", lossy], check=True)
 
@@ -117,6 +156,19 @@ def main() -> int:
           str(r["bandwidth"].get("edge_-45db_hz")))
     check("...and that edge is constant over time (fixed filter)",
           r["bandwidth_stability"].get("looks_like_fixed_filter") is True)
+
+    print("\n3b. noise-limited material must not be rescued by its noise floor")
+    r = audit(noisy, seconds=15)
+    check("the 20 kHz edge is still located despite the noise floor",
+          r["bandwidth"].get("edge_-45db_hz") is not None
+          and abs(r["bandwidth"]["edge_-45db_hz"] - 20000) < 1500,
+          str(r["bandwidth"].get("edge_-45db_hz")))
+    check("HF test finds no content (noise is not mistaken for content)",
+          r["top_octave"].get("content_present") is False,
+          f"peak {r['top_octave'].get('band_peak_rel_db')} dB, "
+          f"contrast {r['top_octave'].get('peak_above_local_floor_db')} dB")
+    check("a noisy upsampled file is still 'questionable', never 'verified'",
+          "questionable" in r["verdict"]["label"], r["verdict"]["label"])
 
     print("\n4. HF content in the top half of the passband")
     r = audit(real, seconds=15)
