@@ -8,7 +8,11 @@ struct ToolError: Error, CustomStringConvertible {
 
 enum Proc {
     /// Run a process, returning captured stdout. stderr is drained concurrently so a
-    /// chatty child cannot deadlock on a full pipe.
+    /// chatty child cannot deadlock on a full pipe. The child's stdin is /dev/null
+    /// unless data is supplied: a child that inherits the caller's terminal sees a
+    /// TTY, and ffmpeg then puts the terminal into interactive mode. Because the
+    /// child runs in its own process group, that tcsetattr earns it a SIGTTOU stop,
+    /// and this tool deadlocks waiting for output that never comes.
     static func run(_ launchPath: String, _ args: [String],
                     stdin: Data? = nil) throws -> Data {
         let p = Process()
@@ -31,6 +35,11 @@ enum Proc {
             let ip = Pipe()
             p.standardInput = ip
             inPipe = ip
+        } else {
+            guard let devNull = FileHandle(forReadingAtPath: "/dev/null") else {
+                throw ToolError(message: "cannot open /dev/null for child stdin")
+            }
+            p.standardInput = devNull
         }
 
         do {
@@ -91,13 +100,15 @@ enum AudioIO {
     }
 
     /// Decode to raw PCM at a chosen format. `fmt` is an ffmpeg muxer name
-    /// (f32le / s32le) and `codec` the matching PCM codec.
+    /// (f32le / s32le) and `codec` the matching PCM codec. `-nostdin` keeps
+    /// ffmpeg from touching the terminal even if stdin were something other
+    /// than /dev/null.
     static func decode(_ path: String, seconds: Double, rate: Int, channels: Int = 1,
                        fmt: String, codec: String) throws -> Data {
         let ffmpeg = Proc.which("ffmpeg")!
         return try Proc.run(ffmpeg, [
-            "-v", "error", "-t", String(seconds), "-i", path, "-map", "0:a:0", "-vn",
-            "-f", fmt, "-acodec", codec, "-ac", String(channels), "-ar", String(rate), "-"
+            "-nostdin", "-v", "error", "-t", String(seconds), "-i", path, "-map", "0:a:0",
+            "-vn", "-f", fmt, "-acodec", codec, "-ac", String(channels), "-ar", String(rate), "-"
         ])
     }
 

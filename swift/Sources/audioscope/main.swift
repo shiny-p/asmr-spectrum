@@ -1,5 +1,9 @@
 import Foundation
 
+// Writing to a pipe whose reader has gone away must surface as an error,
+// not terminate the process silently.
+signal(SIGPIPE, SIG_IGN)
+
 let usage = """
 audioscope — audio parameter audit for macOS
 
